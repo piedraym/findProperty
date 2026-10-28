@@ -4,9 +4,11 @@ import BudgetFilter from './components/BudgetFilter'
 import CityFilter from './components/CityFilter'
 import ColumnFilter from './components/ColumnFilter'
 import DescriptionFilter from './components/DescriptionFilter'
+import PageSizeSelect from './components/PageSizeSelect'
 import Pagination from './components/Pagination'
 
-const PAGE_SIZE = 5
+const PAGE_SIZE_OPTIONS = [5, 10, 20]
+const SERVER_ERROR = 'Could not reach the server. Please check that it is running and try again.'
 const COLUMN_COUNT = 8
 const NO_SORT = { by: null, order: null }
 
@@ -36,9 +38,27 @@ function errorMessage(body, status) {
   return `Error ${status}`
 }
 
+// Creates an error for problems the user can't fix by changing the filters
+// (server down, server crash). These errors show a Retry button.
+function serverError() {
+  const err = new Error(SERVER_ERROR)
+  err.canRetry = true
+  return err
+}
+
+// Reads the response body as JSON, or returns null if it is not JSON
+// (for example the empty 500 the dev proxy returns when the backend is down)
+async function readJson(res) {
+  try {
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
 // Builds the query string for /api/listings, skipping the empty filters
-function buildParams(filters, sort, page) {
-  const params = new URLSearchParams({ page, pageSize: PAGE_SIZE })
+function buildParams(filters, sort, page, pageSize) {
+  const params = new URLSearchParams({ page, pageSize })
   for (const [name, value] of Object.entries(filters)) {
     if (value.trim()) params.set(name, value.trim())
   }
@@ -57,33 +77,48 @@ function App() {
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [sort, setSort] = useState(NO_SORT)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0])
   const [cities, setCities] = useState([])
- 
+  const [citiesFailed, setCitiesFailed] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
-  // Loads the list of cities once, when the page opens, to fill the selector
+  // Loads the list of cities to fill the selector, when the page opens and on Retry
   useEffect(() => {
     fetch('/api/cities')
-      .then((res) => (res.ok ? res.json() : []))
-      .then(setCities)
-      .catch(() => setCities([]))
-  }, [])
+      .then((res) => {
+        if (!res.ok) throw serverError()
+        return res.json()
+      })
+      .then((list) => {
+        setCities(list)
+        setCitiesFailed(false)
+      })
+      .catch(() => setCitiesFailed(true))
+  }, [retryCount])
 
-  // Fetches the listings every time the filters, the sort or the page change
+  // Fetches the listings every time the filters, the sort, the page or the page size change.
+  // retryCount is also a dependency so the Retry button can repeat the same request.
   useEffect(() => {
     const controller = new AbortController()
 
     setLoading(true)
     setError(null)
 
-    fetch(`/api/listings?${buildParams(filters, sort, page)}`, { signal: controller.signal })
+    fetch(`/api/listings?${buildParams(filters, sort, page, pageSize)}`, {
+      signal: controller.signal,
+    })
       .then(async (res) => {
-        const body = await res.json()
-        if (!res.ok) throw new Error(errorMessage(body, res.status))
-        return body
+        const body = await readJson(res)
+        if (res.ok && body) return body
+        if (res.status >= 500 || !body) throw serverError()
+        throw new Error(errorMessage(body, res.status))
       })
       .then(setData)
       .catch((err) => {
-        if (err.name !== 'AbortError') setError(err.message)
+        if (err.name === 'AbortError') return
+        // fetch itself rejects with a TypeError when the network or server is unreachable
+        const failure = err instanceof TypeError ? serverError() : err
+        setError({ message: failure.message, canRetry: Boolean(failure.canRetry) })
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false)
@@ -91,7 +126,7 @@ function App() {
 
     // Cancels this request if a new search starts before it finishes
     return () => controller.abort()
-  }, [filters, sort, page])
+  }, [filters, sort, page, pageSize, retryCount])
 
   // Changes one filter, keeps the others, and goes back to the first page
   function updateFilter(name, value) {
@@ -113,6 +148,17 @@ function App() {
     setPage(1)
   }
 
+  // Changes how many results are shown per page and goes back to the first page
+  function updatePageSize(size) {
+    setPageSize(size)
+    setPage(1)
+  }
+
+  // Repeats the last request after a server error
+  function retry() {
+    setRetryCount((n) => n + 1)
+  }
+
   const hasActiveFilters =
     Object.values(filters).some((v) => v.trim() !== '') || sort.by !== null
 
@@ -121,7 +167,14 @@ function App() {
     if (error) {
       return (
         <tr>
-          <td colSpan={COLUMN_COUNT} className="status error">Could not load listings: {error}</td>
+          <td colSpan={COLUMN_COUNT} className="status error">
+            Could not load listings: {error.message}
+            {error.canRetry && (
+              <button type="button" className="retry-button" onClick={retry}>
+                Retry
+              </button>
+            )}
+          </td>
         </tr>
       )
     }
@@ -171,14 +224,17 @@ function App() {
         <p className="summary">
           {data && !error && `${data.total} results`} {loading && '· updating…'}
         </p>
-        <button
-          type="button"
-          className="clear-button"
-          onClick={clearFilters}
-          disabled={!hasActiveFilters}
-        >
-          Clear filters
-        </button>
+        <div className="toolbar-actions">
+          <PageSizeSelect value={pageSize} options={PAGE_SIZE_OPTIONS} onChange={updatePageSize} />
+          <button
+            type="button"
+            className="clear-button"
+            onClick={clearFilters}
+            disabled={!hasActiveFilters}
+          >
+            Clear filters
+          </button>
+        </div>
       </div>
 
       <table>
@@ -200,6 +256,7 @@ function App() {
             <CityFilter
               value={filters.city}
               cities={cities}
+              unavailable={citiesFailed}
               onChange={(v) => updateFilter('city', v)}
             />
             <ColumnFilter

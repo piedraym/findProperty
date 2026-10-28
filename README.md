@@ -25,6 +25,18 @@ Open http://localhost:5173. Interactive API docs are at http://localhost:8000/do
 
 The Vite dev server proxies `/api/*` to the backend, so the frontend calls relative URLs and avoids CORS issues.
 
+## Running the tests
+
+```bash
+cd backend
+uv run pytest
+```
+
+There are 62 tests in two files:
+
+- `tests/test_search.py`: unit tests for the pure functions in `search.py`. They cover the filters, each scoring component (asymmetric budget, price per sqft, half-life recency, the pending multiplier), tie-breaking and pagination maths.
+- `tests/test_api.py`: end-to-end tests against the real API and sample dataset. They cover the default order, combined filters, no-match results, every invalid input (min > max, negative values, `pageSize ≤ 0`, unknown city, bad `sortBy`…), pagination boundaries (partial last page, page out of range, walking every page with no gaps or duplicates) and ranking rules.
+
 ## Project structure
 
 ```
@@ -35,9 +47,11 @@ backend/
     data.py      loads and validates the JSON once at startup
     search.py    pure functions: filtering, scoring, sorting, pagination
     main.py      FastAPI endpoints and input validation
+  tests/         pytest suite (unit + API)
 frontend/src/
   App.jsx        search state, data fetching, results table
-  components/    DescriptionFilter, BudgetFilter, ColumnFilter, CityFilter, Pagination
+  components/    DescriptionFilter, BudgetFilter, ColumnFilter, CityFilter,
+                 PageSizeSelect, Pagination
 ```
 
 `search.py` has no FastAPI code in it, so the search logic can be read and tested apart from the HTTP layer.
@@ -139,6 +153,10 @@ This is a half-life decay: a listing is worth 1.0 on the reference date, 0.5 aft
 | 55 Elm Ct | $470,000 | 1,300 | newest | 0.836 |
 | 789 Pine Rd | $399,000 | 850 | 3 days before newest | 0.835 |
 
+### Tied scores
+
+When two listings have the same score, the **cheaper one comes first**. If the price is also equal, they are ordered by `source` and then `id`. Results are therefore always in the same order for the same input, and pages never shuffle between requests.
+
 All weights and constants are defined at the top of `backend/app/search.py`, so they are easy to tune.
 
 ## Input validation
@@ -167,6 +185,8 @@ The frontend reads both error shapes FastAPI returns (a string `detail` from our
 - **Stale responses are discarded.** Each search cancels the previous in-flight request with an `AbortController`, so fast typing never shows results for an older query.
 - **Any filter change resets to page 1**, so the user never lands on a page that no longer exists.
 - **"Clear filters"** resets every filter and the sort back to the original JSON order.
+- **Results per page** (5, 10 or 20) can be chosen next to "Clear filters". The selector sits outside the pagination controls, because those hide when everything fits on one page.
+- **Server errors are explained.** If the backend is down or crashes, the user sees "Could not reach the server…" with a **Retry** button, instead of a raw parsing error. Validation errors (e.g. min > max) show the API's message and no Retry button, because retrying would not help.
 
 ## Data handling
 
@@ -178,6 +198,5 @@ The frontend reads both error shapes FastAPI returns (a string `detail` from our
 
 - **Cross-source duplicates are not merged.** For example, `MLS_A/A1` "123 Main St, Apt 4B" and `MLS_B/B7` "123 Main Street, Unit 4B" are the same unit, with slightly different prices. Merging them would need address normalization (St/Street, Apt/Unit) plus a location check using latitude/longitude.
 - **Every keystroke triggers a request.** Stale requests are cancelled, but debouncing the inputs would cut the number of calls.
-- **No automated tests yet.** The scoring and filter functions in `search.py` are pure and would be simple to unit-test.
 - **Data is held in memory.** That is fine for a small sample dataset; a real feed would need a database with indexed filters.
-# findProperty
+- **No frontend tests.** The test suite covers the backend, where all the search and scoring logic lives. Component tests (e.g. with Vitest and Testing Library) would be the next addition.

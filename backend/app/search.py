@@ -131,6 +131,8 @@ def score_listings(
     return scored
 
 
-# Sorts by relevance score, highest first. Ties keep their previous order.
+# Sorts by relevance score, highest first.
+# Ties are broken by the cheaper price, then by source and id,
+# so the order is always the same for the same input.
 def sort_by_score(listings: list[ScoredListing]) -> list[ScoredListing]:
-    return sorted(listings, key=lambda l: -(l.score or 0))
+    return sorted(listings, key=lambda l: (-(l.score or 0), l.price, l.source, l.id))

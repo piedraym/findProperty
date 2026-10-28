@@ -1,7 +1,8 @@
 // Table header cell with a dropdown to filter by city.
 // Controlled: the parent passes the selected city and the list of options.
 // The empty option ("All cities") means no city filter.
-function CityFilter({ value, cities, onChange }) {
+// If the list could not be loaded, the dropdown is disabled and says so.
+function CityFilter({ value, cities, unavailable, onChange }) {
   return (
     <th className="column-filter">
       <div className="column-title">
@@ -14,7 +15,7 @@ function CityFilter({ value, cities, onChange }) {
         onChange={(e) => onChange(e.target.value)}
         disabled={cities.length === 0}
       >
-        <option value="">All cities</option>
+        <option value="">{unavailable ? 'Cities unavailable' : 'All cities'}</option>
         {cities.map((c) => (
           <option key={c} value={c}>
             {c}
